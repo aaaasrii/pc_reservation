@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js"></script>
+<script type="module" src="firebase-sync.js"></script>
 <style>
 * { box-sizing: border-box; }
 :root {
@@ -275,8 +276,8 @@ function genQR(){ return Math.random().toString(36).slice(2,8).toUpperCase(); }
 const TODAY_ISO = isoOf(new Date());
 const CURRENT_HOUR = new Date().getHours();
 
-function storageGet(k){ try{ const r=localStorage.getItem(k); return r?JSON.parse(r):null; }catch{ return null; } }
-function storageSet(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }catch{ return false; } }
+function storageGet(k){ if(window.DB&&/^lab_(pcs_v2|bookings_v3|reports_v1|audit_v1|slots_v1|admin_pin_v1)$/.test(k)){ const v=window.DB.get(k); return v===undefined?null:v; } try{ const r=localStorage.getItem(k); return r?JSON.parse(r):null; }catch{ return null; } }
+function storageSet(k,v){ if(window.DB&&/^lab_(pcs_v2|bookings_v3|reports_v1|audit_v1|slots_v1|admin_pin_v1)$/.test(k)) return window.DB.set(k,v); try{ localStorage.setItem(k,JSON.stringify(v)); return true; }catch{ return false; } }
 const KEY_PCS="lab_pcs_v2", KEY_BOOKINGS="lab_bookings_v3", KEY_PIN="lab_admin_pin_v1", KEY_PROFILE="lab_profile_v1", KEY_SLOTS="lab_slots_v1", KEY_THEME="lab_theme_v1", KEY_AUDIT="lab_audit_v1", KEY_REPORTS="lab_reports_v1";
 function logAudit(actor,action,detail){
   const fresh=storageGet(KEY_AUDIT)||[];
@@ -309,16 +310,23 @@ function LabReservation(){
 
   const showToast=useCallback((text,kind="ok")=>{ setToast({text,kind}); clearTimeout(showToast._t); showToast._t=setTimeout(()=>setToast(null),2800); },[]);
 
-  useEffect(()=>{
-    let p=storageGet(KEY_PCS); if(!p){ p=defaultPCs(); storageSet(KEY_PCS,p); }
+  useEffect(()=>{ (window.DBREADY||Promise.resolve()).then(()=>{
+    let p=storageGet(KEY_PCS); if(!p||!p.length){ p=defaultPCs(); storageSet(KEY_PCS,p); }
     let b=storageGet(KEY_BOOKINGS); if(!b){ b=[]; storageSet(KEY_BOOKINGS,b); }
     let s=storageGet(KEY_SLOTS); if(!s||!s.length){ s=DEFAULT_SLOTS; storageSet(KEY_SLOTS,s); }
     setSlots(s);
     if(!storageGet(KEY_PIN)) storageSet(KEY_PIN,{pin:"1234"});
     const prof=storageGet(KEY_PROFILE); if(prof){ setName(prof.name||""); setMatric(prof.matric||""); }
     setPcs(p); setBookings(b); setReports(storageGet(KEY_REPORTS)||[]); setLoading(false);
-  },[]);
+  }); },[]);
 
+useEffect(()=>{
+  const sync=()=>{ setBookings(storageGet(KEY_BOOKINGS)||[]); setReports(storageGet(KEY_REPORTS)||[]);
+    const p=storageGet(KEY_PCS); if(p&&p.length) setPcs(p); const s=storageGet(KEY_SLOTS); if(s&&s.length) setSlots(s); };
+  const err=()=>showToast("Sambungan Firestore gagal. Semak Rules.","err");
+  window.addEventListener("dbchange",sync); window.addEventListener("dberror",err);
+  return ()=>{ window.removeEventListener("dbchange",sync); window.removeEventListener("dberror",err); };
+},[]);
   // ---- ticking clock: countdowns + auto-release + session expiry ----
   useEffect(()=>{
     const t=setInterval(()=>{
@@ -382,7 +390,7 @@ function LabReservation(){
     const fresh=storageGet(KEY_BOOKINGS)||[];
     const conflict=selectedSlots.some(slot=>fresh.some(b=>b.pcId===selectedPc.id&&b.date===selectedDate&&b.slot===slot&&b.status!=="rejected"));
     if(conflict){ setBookings(fresh); showToast("Sekurang-kurangnya satu slot telah ditempah. Pilih semula.","err"); setBusy(false); return; }
-    const groupId=uid(); const stamp=selectedDate.replaceAll("-",""); const seq=String(fresh.length+1).padStart(3,"0"); const no=`PS-${stamp}-${seq}`;
+    const groupId=uid(); const stamp=selectedDate.replaceAll("-",""); const seq=Date.now().toString(36).slice(-4).toUpperCase(); const no=`PS-${stamp}-${seq}`;
     const entries=selectedSlots.map((slot,idx)=>({
       id:uid(),groupId,bookingNo:selectedSlots.length>1?`${no}-${idx+1}`:no,
       pcId:selectedPc.id,pcLabel:selectedPc.label,date:selectedDate,slot,name:name.trim(),matric:matric.trim(),
